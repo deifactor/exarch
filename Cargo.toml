@@ -1,0 +1,16 @@
+[package]
+name = "exarch"
+version = "0.1.0"
+authors = ["Ash <ext0l@riseup.net>"]
+edition = "2018"
+
+[dependencies]
+clap = "2.33"
+structopt = "0.3"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.7"
+
+async-std = "1.6"
+async-tls = "0.9"
+rustls = "0.18"
