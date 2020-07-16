@@ -1,3 +1,4 @@
+use crate::markgem;
 use anyhow::{anyhow, bail, Context, Result};
 use async_std::io::prelude::*;
 use async_std::net::{TcpListener, TcpStream};
@@ -99,8 +100,15 @@ impl Server {
     }
 
     async fn reply<W: Write + Unpin>(&self, url: Url, mut stream: W) -> Result<()> {
+        let mut path = self.options.root.clone();
+        if let Some(segments) = url.path_segments() {
+            path.extend(segments);
+        }
+        debug!("Serving {}", path.display());
+        let contents = std::fs::read_to_string(path)?;
         stream.write_all(&b"20 text/gemini\r\n"[..]).await?;
-        stream.write_all(&b"foo bar baz"[..]).await?;
+        let gemini = markgem::to_gemini(&contents)?;
+        stream.write_all(&gemini).await?;
         Ok(())
     }
 }

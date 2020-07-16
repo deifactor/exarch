@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_std::task;
 use structopt::StructOpt;
 
+mod markgem;
 mod serve;
 #[derive(Debug, StructOpt)]
 #[structopt(name = "exarch", about = "A static site generator for Gemini")]
