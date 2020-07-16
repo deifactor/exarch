@@ -1,24 +1,49 @@
 use anyhow::Result;
-use pulldown_cmark::{Event, Options, Parser, Tag};
+use pulldown_cmark::{Event, Parser, Tag};
 use std::io::{BufWriter, Write};
 
 /// Converts the given Markdown to Gemini, writing it to the given output. The output will be
 /// automatically buffered.
 pub fn to_gemini(markdown: &str) -> Result<Vec<u8>> {
     let markdown = strip_matter(markdown);
-    let parser = Parser::new(markdown);
     let mut vec: Vec<u8> = vec![];
-    {
-        let mut out = BufWriter::new(&mut vec);
+    let converter = Converter::new(&mut vec);
+    converter.convert(Parser::new(markdown))?;
+    Ok(vec)
+}
+
+struct Converter<W: Write> {
+    out: BufWriter<W>,
+}
+
+impl<W: Write> Converter<W> {
+    fn new(writer: W) -> Self {
+        Self {
+            out: BufWriter::new(writer),
+        }
+    }
+    fn convert(mut self, parser: Parser) -> Result<()> {
         for event in parser {
             match event {
-                Event::Text(text) => out.write_all(text.as_bytes())?,
-                Event::End(Tag::Paragraph) => out.write_all(b"\n\n")?,
+                Event::Start(Tag::Emphasis) | Event::End(Tag::Emphasis) => self.write("*")?,
+                Event::Start(Tag::Strong) | Event::End(Tag::Strong) => self.write("**")?,
+                Event::Start(Tag::Heading(depth)) => {
+                    self.out.write_all(vec![b'#'; depth as usize].as_slice())?;
+                    self.write(" ")?
+                }
+                Event::End(Tag::Heading(_)) => self.write("\n\n")?,
+                Event::End(Tag::Paragraph) => self.write("\n\n")?,
+                Event::Text(text) => self.write(&text)?,
                 _ => (),
             }
         }
+        Ok(())
     }
-    Ok(vec)
+
+    fn write(&mut self, s: &str) -> Result<()> {
+        self.out.write_all(s.as_bytes())?;
+        Ok(())
+    }
 }
 
 /// Removes the Zola front matter from some markdown text. The front matter is delimited by +++
