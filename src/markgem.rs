@@ -1,5 +1,5 @@
 use anyhow::Result;
-use pulldown_cmark::{CowStr, Event, Parser, Tag};
+use pulldown_cmark::{CowStr, Event, Options, Parser, Tag};
 use std::io::{BufWriter, Write};
 
 /// Converts the given Markdown to Gemini, writing it to the given output. The output will be
@@ -8,7 +8,7 @@ pub fn to_gemini(markdown: &str) -> Result<Vec<u8>> {
     let markdown = strip_matter(markdown);
     let mut vec: Vec<u8> = vec![];
     let converter = Converter::new(&mut vec);
-    converter.convert(Parser::new(markdown))?;
+    converter.convert(Parser::new_ext(markdown, Options::ENABLE_STRIKETHROUGH))?;
     Ok(vec)
 }
 
@@ -39,6 +39,9 @@ impl<'a, W: Write> Converter<'a, W> {
             match event {
                 Event::Start(Tag::Emphasis) | Event::End(Tag::Emphasis) => self.write("*")?,
                 Event::Start(Tag::Strong) | Event::End(Tag::Strong) => self.write("**")?,
+                Event::Start(Tag::Strikethrough) | Event::End(Tag::Strikethrough) => {
+                    self.write("~~")?
+                }
                 Event::Start(Tag::BlockQuote) => self.write(">")?,
                 // TODO: Nested lists, properly dealing with ordered lists.
                 Event::Start(Tag::Item) => self.write("* ")?,
