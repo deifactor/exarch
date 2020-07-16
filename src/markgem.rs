@@ -39,6 +39,11 @@ impl<'a, W: Write> Converter<'a, W> {
             match event {
                 Event::Start(Tag::Emphasis) | Event::End(Tag::Emphasis) => self.write("*")?,
                 Event::Start(Tag::Strong) | Event::End(Tag::Strong) => self.write("**")?,
+                Event::Start(Tag::BlockQuote) => self.write(">")?,
+                // TODO: Nested lists, properly dealing with ordered lists.
+                Event::Start(Tag::Item) => self.write("* ")?,
+                Event::End(Tag::Item) => self.write("\n")?,
+                Event::End(Tag::List(_)) => self.write("\n")?,
                 Event::Start(Tag::Heading(depth)) => {
                     self.out
                         // Max out at 3, since that's the most Gemtext supports.
@@ -53,7 +58,10 @@ impl<'a, W: Write> Converter<'a, W> {
                 Event::End(Tag::Link(_, destination, title)) => {
                     self.handle_link(destination, title)?
                 }
-                Event::Text(text) => self.write(&text)?,
+                Event::Text(text) => {
+                    self.write(&text)?;
+                    self.write(" ")?
+                }
                 _ => (),
             }
         }
