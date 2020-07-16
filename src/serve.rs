@@ -9,6 +9,7 @@ use rustls::{internal::pemfile, NoClientAuth, ServerConfig};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
+use std::sync::Arc;
 use structopt::StructOpt;
 use url::Url;
 
@@ -31,61 +32,77 @@ pub struct ServeOpt {
     port: u16,
 }
 
-pub async fn serve(opt: ServeOpt) -> Result<()> {
-    let listener = TcpListener::bind(("0.0.0.0", opt.port))
+pub async fn serve(options: ServeOpt) -> Result<()> {
+    let listener = TcpListener::bind(("0.0.0.0", options.port))
         .await
         .context("failed to bind")?;
-
-    let server = build_server(&opt).context("couldn't build server")?;
-    let acceptor: TlsAcceptor = server.into();
+    let server = Arc::new(Server::build(options).await?);
 
     let mut incoming = listener.incoming();
     while let Some(stream) = incoming.next().await {
         let stream = stream.context("bad stream")?;
-        let acceptor = acceptor.clone();
-        task::spawn(async {
-            handle_stream(stream, acceptor)
-                .await
-                .map_err(|err| error!("Error while handling stream: {}", err))
-        });
+        server.clone().handle_stream(stream).await?;
     }
 
     Ok(())
 }
 
-pub fn build_server(opt: &ServeOpt) -> Result<ServerConfig> {
-    let certs = File::open(&opt.cert)
-        .context("failed to open certificate")
-        .and_then(|cert| {
-            pemfile::certs(&mut BufReader::new(cert))
-                .map_err(|_| anyhow!("certificate decoding error"))
-        })?;
-    let mut keys = File::open(&opt.key)
-        .context("failed to open keyfile")
-        .and_then(|key| {
-            pemfile::pkcs8_private_keys(&mut BufReader::new(key))
-                .map_err(|_| anyhow!("keyfile decoding error"))
-        })?;
-    let mut server_config = ServerConfig::new(NoClientAuth::new());
-    server_config
-        .set_single_cert(certs, keys.remove(0))
-        .context("failed to use certificate")?;
-    Ok(server_config)
+struct Server {
+    options: ServeOpt,
+    acceptor: TlsAcceptor,
 }
 
-async fn handle_stream(stream: TcpStream, acceptor: TlsAcceptor) -> Result<()> {
-    let peer_addr = stream.peer_addr()?.ip();
-    debug!("Got connection from {}", peer_addr);
-    let mut tls_stream = acceptor
-        .accept(stream)
-        .await
-        .context("failed tcp handshake")?;
-    let url = read_request(&mut tls_stream).await?;
-    info!("{} requested {}", peer_addr, url);
-    tls_stream.write_all(&b"20 text/gemini\r\n"[..]).await?;
-    tls_stream.write_all(&b"foo bar baz"[..]).await?;
-    tls_stream.flush().await?;
-    Ok(())
+impl Server {
+    async fn build(options: ServeOpt) -> Result<Self> {
+        let certs = File::open(&options.cert)
+            .context("failed to open certificate")
+            .and_then(|cert| {
+                pemfile::certs(&mut BufReader::new(cert))
+                    .map_err(|_| anyhow!("certificate decoding error"))
+            })?;
+        let mut keys = File::open(&options.key)
+            .context("failed to open keyfile")
+            .and_then(|key| {
+                pemfile::pkcs8_private_keys(&mut BufReader::new(key))
+                    .map_err(|_| anyhow!("keyfile decoding error"))
+            })?;
+        let mut server_config = ServerConfig::new(NoClientAuth::new());
+        server_config
+            .set_single_cert(certs, keys.remove(0))
+            .context("failed to use certificate")?;
+        let acceptor: TlsAcceptor = server_config.into();
+        Ok(Self { options, acceptor })
+    }
+
+    async fn handle_stream(self: Arc<Self>, stream: TcpStream) -> Result<()> {
+        let acceptor = self.acceptor.clone();
+        task::spawn(async {
+            if let Err(e) = self.handle_inner(stream, acceptor).await {
+                error!("Error while handling stream: {}", e);
+            }
+        });
+        Ok(())
+    }
+
+    async fn handle_inner(self: Arc<Self>, stream: TcpStream, acceptor: TlsAcceptor) -> Result<()> {
+        let peer_addr = stream.peer_addr()?.ip();
+        debug!("Got connection from {}", peer_addr);
+        let mut tls_stream = acceptor
+            .accept(stream)
+            .await
+            .context("failed tcp handshake")?;
+        let url = read_request(&mut tls_stream).await?;
+        info!("{} requested {}", peer_addr, url);
+        self.reply(url, &mut tls_stream).await?;
+        tls_stream.flush().await?;
+        Ok(())
+    }
+
+    async fn reply<W: Write + Unpin>(&self, url: Url, mut stream: W) -> Result<()> {
+        stream.write_all(&b"20 text/gemini\r\n"[..]).await?;
+        stream.write_all(&b"foo bar baz"[..]).await?;
+        Ok(())
+    }
 }
 
 const MAX_URL_LENGTH: usize = 1024;
