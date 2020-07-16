@@ -1,14 +1,16 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use async_std::io::prelude::*;
 use async_std::net::{TcpListener, TcpStream};
 use async_std::prelude::*;
 use async_std::task;
 use async_tls::TlsAcceptor;
-use log::{debug, error};
+use log::{debug, error, info};
 use rustls::{internal::pemfile, NoClientAuth, ServerConfig};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 use structopt::StructOpt;
+use url::Url;
 
 #[derive(Debug, StructOpt)]
 pub struct ServeOpt {
@@ -78,7 +80,41 @@ async fn handle_stream(stream: TcpStream, acceptor: TlsAcceptor) -> Result<()> {
         .accept(stream)
         .await
         .context("failed tcp handshake")?;
-    tls_stream.write_all(&b"hello, world!"[..]).await?;
+    let url = read_request(&mut tls_stream).await?;
+    info!("{} requested {}", peer_addr, url);
+    tls_stream.write_all(&b"20 text/gemini\r\n"[..]).await?;
+    tls_stream.write_all(&b"foo bar baz"[..]).await?;
     tls_stream.flush().await?;
     Ok(())
+}
+
+const MAX_URL_LENGTH: usize = 1024;
+const EOL: &'static [u8] = b"\r\n";
+
+async fn read_request<R: Read + Unpin>(mut stream: R) -> Result<Url> {
+    // The longest valid request is a 1024-character URL followed by CRLF, so we can statically
+    // allocate this many bytes.
+    let mut request = [0; MAX_URL_LENGTH + EOL.len()];
+    let mut len = 0;
+    loop {
+        let bytes_read = stream.read(&mut request[len..]).await?;
+        len += bytes_read;
+        if request[..len].ends_with(EOL) {
+            // Got the full URL.
+            break;
+        } else if bytes_read == 0 {
+            bail!("Unexpected end of request");
+        }
+    }
+    let request = std::str::from_utf8(&request[..len - EOL.len()])
+        .context("could not parse request as utf8")?;
+    let mut url = Url::parse(request)?;
+    if url.scheme() == "" {
+        url.set_scheme("gemini")
+            .map_err(|_| anyhow!("Could not set URL scheme"))?;
+    }
+    if url.scheme() != "gemini" {
+        bail!("Unknown url scheme {}", url.scheme())
+    }
+    Ok(url)
 }
