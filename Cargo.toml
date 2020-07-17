@@ -18,3 +18,5 @@ rustls = "0.18"
 url = "2.1"
 
 pulldown-cmark = "0.7"
+
+indoc = "0.3"

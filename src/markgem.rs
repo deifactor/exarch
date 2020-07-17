@@ -9,6 +9,9 @@ pub fn to_gemini(markdown: &str) -> Result<Vec<u8>> {
     let mut vec: Vec<u8> = vec![];
     let converter = Converter::new(&mut vec);
     converter.convert(Parser::new_ext(markdown, Options::ENABLE_STRIKETHROUGH))?;
+    while vec.last() == Some(&b'\n') {
+        vec.pop();
+    }
     Ok(vec)
 }
 
@@ -50,7 +53,7 @@ impl<'a, W: Write> Converter<'a, W> {
                 Event::Start(Tag::Heading(depth)) => {
                     self.out
                         // Max out at 3, since that's the most Gemtext supports.
-                        .write_all(vec![b'#'; depth.max(3) as usize].as_slice())?;
+                        .write_all(vec![b'#'; depth.min(3) as usize].as_slice())?;
                     self.write(" ")?
                 }
                 Event::End(Tag::Heading(_)) => self.write("\n\n")?,
@@ -63,8 +66,8 @@ impl<'a, W: Write> Converter<'a, W> {
                 }
                 Event::Text(text) => {
                     self.write(&text)?;
-                    self.write(" ")?
                 }
+                Event::SoftBreak => self.write(" ")?,
                 _ => (),
             }
         }
@@ -87,8 +90,10 @@ impl<'a, W: Write> Converter<'a, W> {
         for link in links {
             self.write("=> ")?;
             self.write(&link.destination)?;
-            self.write(" ")?;
-            self.write(&link.title)?;
+            if !link.title.is_empty() {
+                self.write(" ")?;
+                self.write(&link.title)?;
+            }
             self.write("\n")?;
         }
         self.write("\n")?;
@@ -110,5 +115,109 @@ fn strip_matter(markdown: &str) -> &str {
         2 => splits[1],
         3 => splits[2],
         _ => markdown,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use indoc::indoc;
+
+    fn check_conversion(markdown: &str, gemini: &str) -> Result<()> {
+        let bytes = to_gemini(markdown)?;
+        assert_eq!(gemini, String::from_utf8(bytes)?);
+        Ok(())
+    }
+
+    #[test]
+    fn soft_newline() -> Result<()> {
+        check_conversion("foo\nbar", "foo bar")
+    }
+
+    #[test]
+    fn hard_newline() -> Result<()> {
+        check_conversion("foo\n\nbar", "foo\n\nbar")
+    }
+
+    #[test]
+    fn headers() -> Result<()> {
+        check_conversion(
+            "# one\n## two\n### three\n#### four",
+            // caps out at depth three
+            "# one\n\n## two\n\n### three\n\n### four",
+        )
+    }
+
+    mod lists {
+        use super::*;
+
+        #[test]
+        fn unordered() -> Result<()> {
+            for marker in &["*", "-", "+"] {
+                check_conversion(
+                    &format!("{marker} first\n{marker} second", marker = marker),
+                    "* first\n* second",
+                )?;
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn ordered_list() -> Result<()> {
+            check_conversion("1. foo\n1. bar\n1. baz", "1. foo\n2. bar\n3. baz")
+        }
+    }
+
+    mod links {
+        use super::*;
+        #[test]
+        fn one_paragraph() -> Result<()> {
+            let markdown =
+                "here is [a link](http://first.com). here is [another](http://second.com).";
+            let gemini = indoc!(
+                r#"
+            here is a link[1]. here is another[2].
+
+            => http://first.com
+            => http://second.com"#
+            );
+            check_conversion(markdown, gemini)
+        }
+
+        #[test]
+        fn multiple_paragraphs() -> Result<()> {
+            let markdown = indoc!(
+                "
+            here is [a link](http://first.com).
+
+            here's some intervening text.
+
+            and [another link](http://second.com).
+
+            more text!
+
+            this is [the last link](http://third.com).
+            "
+            );
+            let gemini = indoc!(
+                "
+            here is a link[1].
+
+            => http://first.com
+
+            here's some intervening text.
+
+            and another link[2].
+
+            => http://second.com
+
+            more text!
+
+            this is the last link[3].
+
+            => http://third.com"
+            );
+            check_conversion(markdown, gemini)
+        }
     }
 }
